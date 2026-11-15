@@ -1,0 +1,74 @@
+{
+  // MicroPython on the ESP32-S3 with mpremote.
+  // Cmd+Shift+B (Ctrl+Shift+B on Windows) runs the file you have open.
+  // Other tasks: Terminal > Run Task...
+  // Each task asks for the ESP32's port. Press Enter to accept the default,
+  // or type a different one (Windows: COM5 etc.). Run "ESP32: List devices" to see ports.
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "espPort",
+      "type": "promptString",
+      "description": "ESP32 serial port (Mac: /dev/cu.usbserial-..., Windows: COMx, e.g. COM5)",
+      "default": "/dev/cu.usbserial-130"
+    }
+  ],
+  "tasks": [
+    {
+      "label": "ESP32: Run current file",
+      "type": "shell",
+      // Runs through tools/esp32.py so Ctrl+C in this terminal also stops the program ON the ESP32.
+      "command": "python3 \"${workspaceFolder}/tools/esp32.py\" run \"${file}\" --port ${input:espPort}",
+      "windows": { "command": "python \"${workspaceFolder}\\tools\\esp32.py\" run \"${file}\" --port ${input:espPort}" },
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
+    },
+    {
+      // Always works: ends mpremote on the Mac AND sends Ctrl-C to the ESP32 so the program's
+      // finally block turns the motors off. No port prompt (fast). Bind a key to it (see README).
+      "label": "ESP32: STOP program (motors off)",
+      "type": "shell",
+      "command": "python3 \"${workspaceFolder}/tools/esp32.py\" stop",
+      "windows": { "command": "python \"${workspaceFolder}\\tools\\esp32.py\" stop" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": false }
+    },
+    {
+      "label": "ESP32: Upload current file as main.py (runs at power-up)",
+      "type": "shell",
+      "command": "mpremote connect ${input:espPort} cp \"${file}\" :main.py + reset",
+      "windows": { "command": "python -m mpremote connect ${input:espPort} cp \"${file}\" :main.py + reset" },
+      "problemMatcher": []
+    },
+    {
+      "label": "ESP32: Remove main.py (stop auto-run)",
+      "type": "shell",
+      "command": "mpremote connect ${input:espPort} rm :main.py + reset",
+      "windows": { "command": "python -m mpremote connect ${input:espPort} rm :main.py + reset" },
+      "problemMatcher": []
+    },
+    {
+      "label": "ESP32: Open REPL",
+      "type": "shell",
+      "command": "mpremote connect ${input:espPort} repl",
+      "windows": { "command": "python -m mpremote connect ${input:espPort} repl" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "ESP32: List files on board",
+      "type": "shell",
+      "command": "mpremote connect ${input:espPort} ls",
+      "windows": { "command": "python -m mpremote connect ${input:espPort} ls" },
+      "problemMatcher": []
+    },
+    {
+      "label": "ESP32: List devices (find the port)",
+      "type": "shell",
+      "command": "mpremote devs",
+      "windows": { "command": "python -m mpremote devs" },
+      "problemMatcher": []
+    }
+  ]
+}
