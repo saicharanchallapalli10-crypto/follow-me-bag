@@ -53,7 +53,7 @@ The drivetrain and UWB following work on the bench (wheels in the air); next ste
    echo 'export PATH="$HOME/Library/Python/3.9/bin:$PATH"' >> ~/.zprofile
    ```
    then open a new Terminal window. `python3 -m mpremote` always works either way.
-3. **Get the code.** The repo is private, so you need to be added as a collaborator first. Then:
+3. **Get the code.** In a terminal:
    ```bash
    cd ~/Documents
    git clone https://github.com/saicharanchallapalli10-crypto/follow-me-bag.git
@@ -95,7 +95,7 @@ python3 tools/esp32.py stop
    ```
    If `python` opens the Microsoft Store, Python was not added to PATH: rerun the installer, choose Modify,
    and tick "Add Python to environment variables". Use `python`, not `python3`, in all commands on Windows.
-4. **Get the code.** The repo is private, so you need to be added as a collaborator first. Then:
+4. **Get the code.** In a terminal:
    ```powershell
    cd $HOME\Documents
    git clone https://github.com/saicharanchallapalli10-crypto/follow-me-bag.git
