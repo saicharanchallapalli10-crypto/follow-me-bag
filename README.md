@@ -56,7 +56,7 @@ The drivetrain and UWB following work on the bench (wheels in the air); next ste
 3. **Get the code.** The repo is private, so you need to be added as a collaborator first. Then:
    ```bash
    cd ~/Documents
-   git clone https://github.com/OWNER/follow-me-bag.git
+   git clone https://github.com/saicharanchallapalli10-crypto/follow-me-bag.git
    ```
    (Git asks you to sign in to GitHub the first time; the easiest way is `brew install gh` then `gh auth login`.)
 4. **Open the folder in VS Code:** File > Open Folder > `follow-me-bag`.
@@ -98,7 +98,7 @@ python3 tools/esp32.py stop
 4. **Get the code.** The repo is private, so you need to be added as a collaborator first. Then:
    ```powershell
    cd $HOME\Documents
-   git clone https://github.com/OWNER/follow-me-bag.git
+   git clone https://github.com/saicharanchallapalli10-crypto/follow-me-bag.git
    ```
    Git for Windows opens a browser window to sign in to GitHub the first time.
 5. **Open the folder in VS Code:** File > Open Folder > `follow-me-bag`.
