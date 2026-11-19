@@ -7,8 +7,10 @@
 Why this exists: when `mpremote run` gets Ctrl+C it only exits on the Mac. It never sends
 Ctrl-C to the board, so the program (and the motors) keep running on the ESP32.
 
-run:  starts `mpremote connect PORT run FILE`. Ctrl+C in the terminal, or VS Code closing
-      the task, ends mpremote and then sends the stop sequence below.
+run:  sends FILE to the board the same way `mpremote run` does (mpremote's own serial code),
+      shows its output, and sends each line you type (+ Enter) to the program's input
+      (follow_me.py uses this for the lift keys u / d / s). Ctrl+C in the terminal, or VS Code
+      closing the task, then sends the stop sequence below.
 stop: ends any mpremote/run process using the ESP32, opens the port, sends ONE Ctrl-C
       (KeyboardInterrupt -> the program's finally block turns the motors off), waits for
       the REPL prompt, and checks the board has gone quiet.
@@ -22,9 +24,11 @@ else the only CP210x (Silicon Labs) COM port. The Windows branches below are mar
 """
 import glob
 import os
+import queue
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 DEFAULT_PORT = "/dev/cu.usbserial-130"
@@ -186,47 +190,119 @@ def cmd_stop(port):
     return 0 if stop_board(port) else 1
 
 
+def start_key_reader():
+    """Read lines typed in this terminal on a background thread; returns a queue of bytes."""
+    q = queue.Queue()
+
+    def reader():
+        try:
+            for line in sys.stdin:
+                # Drop control characters: Ctrl-C/Ctrl-D bytes would interrupt or reset the board.
+                clean = "".join(ch for ch in line if ch >= " ")
+                q.put((clean + "\n").encode("utf-8", "replace"))
+        except (OSError, ValueError, EOFError):
+            pass
+
+    threading.Thread(target=reader, daemon=True).start()
+    return q
+
+
 def cmd_run(port, path):
     if not os.path.isfile(path):
         say("ERROR: no such file:", path)
         return 2
-    say("running", os.path.basename(path), "on", port, "- Ctrl+C here stops it (motors off).")
-    # Own session: Ctrl+C reaches only this wrapper, which then stops mpremote AND the board.
-    args = [sys.executable, "-m", "mpremote", "connect", port, "run", path]
-    if WINDOWS:
-        child = subprocess.Popen(args, stdin=subprocess.DEVNULL,
-                                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-    else:
-        child = subprocess.Popen(args, stdin=subprocess.DEVNULL, start_new_session=True)
+    try:
+        from mpremote.transport_serial import SerialTransport
+    except ImportError:
+        say("ERROR: mpremote is not installed for", sys.executable, "- run: pip install mpremote")
+        return 2
+    with open(path, "rb") as f:
+        code = f.read()
+
     stopping = {"why": None}
     signals = [s for s in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK") if hasattr(signal, s)]
     signals = [getattr(signal, s) for s in signals]
 
     def on_signal(signum, _frame):
         stopping["why"] = signal.Signals(signum).name
-        try:
-            child.kill()
-        except ProcessLookupError:
-            pass
 
     for s in signals:
         signal.signal(s, on_signal)
 
-    while True:
+    try:
+        board = SerialTransport(port, baudrate=115200)
+    except Exception as e:
+        say("ERROR: cannot open", port, "-", e)
+        say("Is Thonny, screen or another terminal using it? Close it and try again.")
+        return 2
+
+    say("running", os.path.basename(path), "on", port,
+        "- type a line + Enter to send it to the program; Ctrl+C here stops it (motors off).")
+    ended = False
+    err = b""
+    try:
+        # Same steps as `mpremote run`: interrupt, soft reset, raw REPL, send the file.
+        board.enter_raw_repl(soft_reset=True)
+        board.exec_raw_no_follow(code)
+        keys = start_key_reader()
+        ser = board.serial
+        section = 0  # 0 = program output, 1 = error output; each ends with \x04
+        while stopping["why"] is None:
+            n = ser.in_waiting
+            if n:
+                data = ser.read(n)
+                while data:
+                    k = data.find(b"\x04")
+                    part = data if k < 0 else data[:k]
+                    if section == 0:
+                        try:
+                            sys.stdout.buffer.write(part)
+                            sys.stdout.flush()
+                        except (OSError, ValueError):
+                            pass
+                    else:
+                        err += part
+                    if k < 0:
+                        break
+                    data = data[k + 1:]
+                    section += 1
+                    if section == 2:
+                        ended = True
+                        break
+                if ended:
+                    break
+            else:
+                time.sleep(0.01)
+            while not keys.empty():
+                ser.write(keys.get())
+    except Exception as e:
+        if stopping["why"] is None:
+            say("ERROR while running:", repr(e))
+
+    if ended:
+        # The program finished by itself (or stopped with an error, printed below).
+        if err:
+            show_text = err.decode("utf-8", "replace").rstrip()
+            try:
+                print(show_text, flush=True)
+            except (OSError, ValueError):
+                pass
         try:
-            # On Windows a blocking wait() cannot be interrupted by Ctrl+C, so poll there.
-            rc = child.wait(timeout=0.2) if WINDOWS else child.wait()
-            break
-        except (InterruptedError, subprocess.TimeoutExpired):
-            continue
+            board.exit_raw_repl()
+        except Exception:
+            pass
+        board.close()
+        return 1 if err else 0
 
-    if stopping["why"] is None:
-        return rc  # program ended by itself (or an error was printed)
-
+    # Stopped by Ctrl+C / VS Code, or the connection failed: make sure the board is stopped.
     # Ignore further Ctrl+C while stopping, so the stop cannot be cut short.
     for s in signals:
         signal.signal(s, signal.SIG_IGN)
-    say("got", stopping["why"], "- stopping the program on the ESP32...")
+    try:
+        board.close()
+    except Exception:
+        pass
+    say("got", stopping["why"] or "an error", "- stopping the program on the ESP32...")
     return 0 if stop_board(port) else 1
 
 

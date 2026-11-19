@@ -15,7 +15,9 @@ Status: the drivetrain and UWB distance-following work on the bench (wheels in t
 - Power: 12V LiFePO4 -> 15A fuse -> switch -> 12V bus (DFR0601, MD10C, UBEC). Adafruit 1385 UBEC 12V->5V
   feeds the breadboard rails.
 - UWB: 2x Qorvo DWM3001CDK. Bag board = initiator wired to the ESP32. Tag = responder carried by the person.
-- Lift (not wired yet): FIT0403 motor + Cytron MD10C, planned on GPIO 14 (PWM) and GPIO 13 (DIR).
+- Lift: FIT0403 motor + Cytron MD10C on GPIO 14 (PWM) and GPIO 13 (DIR); MD10C GND -> ESP32 G.
+  Lift encoder A (yellow) GPIO 42, B (white) GPIO 38, both through dividers. Hardware counters 2 and 3
+  (wheels use 0 and 1). Which DIR value is UP is NOT confirmed yet (`LIFT_UP_DIR` = 0 placeholder).
 
 ## Pin map (confirmed on hardware)
 
@@ -25,6 +27,8 @@ Status: the drivetrain and UWB distance-following work on the bench (wheels in t
 | Motor 2 (right) PWM / A / B | 10 / 11 / 12 | DFR0601 P2 / A2 / B2 |
 | Motor 1 encoder A | **40** | yellow wire via 10k/20k divider + 1 nF to GND |
 | Motor 2 encoder A | **39** | yellow wire via 10k/20k divider + 1 nF to GND |
+| Lift PWM / DIR | 14 / 13 | MD10C PWM / DIR |
+| Lift encoder A / B | 42 / 38 | yellow / white via dividers |
 | UWB sensor TX -> ESP32 RX | 21 | DWM3001CDK J10 pin 10 |
 | ESP32 TX -> UWB sensor RX | 47 | DWM3001CDK J10 pin 8 |
 
@@ -50,10 +54,18 @@ Status: the drivetrain and UWB distance-following work on the bench (wheels in t
 - `follow_me.py`: main program. Median-of-5 UWB distance -> target speed; stop <= 100 cm, start > 115 cm,
   35% at start up to 80% at >= 300 cm; ramp +3%/-10% per 0.1 s; stops if no reading for 1 s;
   motor 2 = base power, motor 1 = base + trim from encoder count difference (GAIN 0.03, MAX_STEP 2, MAX_TRIM 20).
-- `follow_me_bench.py`: same with 30 / 40 / 100 cm for bench tests.
-- `tests/`: motor_check.py, motor_match.py, uwb_distance.py, uwb_test.py, uwb_send_commands.py, uwb_baud_scan.py,
+  Lift on terminal keys u / d / s (non-blocking stdin via select.poll): 40% power, 1 s per press, max 4 s,
+  stall stop after 3 zero reads on encoder A. INTERLOCK: wheels and lift are never powered together.
+  Modes DRIVE -> STOP_WHEELS (ramp to 0, wait for both wheel encoders at 0, max 1.5 s) -> LIFT -> SETTLE (0.3 s)
+  -> DRIVE. set_motor/set_lift check the other motors' real PWM duty and on a conflict cut all motors and raise.
+  Logic was checked on the Mac in a fake-hardware simulation only (2026-11-18), not on hardware yet.
+- `follow_me_bench.py`: same with 30 / 40 / 100 cm for bench tests (keep it identical apart from those 3 lines).
+- `tests/`: lift_test_encoder.py (lift DIR 0 then DIR 1, counts A/B, wheels held off), motor_check.py, motor_match.py, uwb_distance.py, uwb_test.py, uwb_send_commands.py, uwb_baud_scan.py,
   loop_test.py (harmless counter for stop tests).
-- `tools/esp32.py`: host-side (Mac) run/stop wrapper around mpremote. Not uploaded to the board.
+- `tools/esp32.py`: host-side run/stop wrapper (Mac; Windows branches untested). `run` uses mpremote's
+  SerialTransport (same upload as `mpremote run`, which never forwards keyboard input) and forwards typed lines
+  to the program's stdin. The new `run` was checked against a fake board on a pty, not yet on the ESP32.
+  Not uploaded to the board.
 
 ## Running code (macOS)
 
@@ -93,5 +105,7 @@ Status: the drivetrain and UWB distance-following work on the bench (wheels in t
 - Ground test on the bag; start with MAX_SPEED around 50.
 - Optional arming step: don't move after power-up until the tag has first been seen within STOP_DIST.
 - Confirm the tag keeps ranging on the power bank over long runs (some power banks shut off at low current).
-- Later: two anchors for steering; ultrasonic/ToF for obstacles and stairs; lift control (MD10C) via an
-  ESP32-hosted Wi-Fi web page with hold-to-run and timeout.
+- Lift: confirm which DIR is UP with tests/lift_test_encoder.py, set LIFT_UP_DIR in both follow files.
+  Test the new esp32.py run (typing reaches the board) with tests/loop_test.py, then the lift keys.
+- Later: two anchors for steering; ultrasonic/ToF for obstacles and stairs; lift control via an
+  ESP32-hosted Wi-Fi web page with hold-to-run and timeout (reuse the interlock in follow_me.py).
