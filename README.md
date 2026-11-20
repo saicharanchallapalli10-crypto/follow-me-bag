@@ -16,6 +16,7 @@ The drivetrain and UWB following work on the bench (wheels in the air); next ste
 |---|---|
 | `follow_me.py` | Main program: UWB distance sets the speed, encoders keep both wheels matched; lift on keys u / d / s, with the wheel/lift interlock |
 | `follow_me_bench.py` | Same, with short distances for bench testing (stop 30 cm, start 40 cm, full speed 100 cm) |
+| `lift_web.py` | Standalone lift test: the ESP32 makes its own Wi-Fi network and a phone web page with hold-to-run UP / DOWN / STOP (see "Lift website") |
 | `tests/motor_check.py` | Runs each motor alone forward and reverse, then both; checks each encoder |
 | `tests/motor_match.py` | Both motors at 80% with encoder speed matching, no UWB |
 | `tests/uwb_distance.py` | Prints raw and smoothed UWB distance |
@@ -34,7 +35,7 @@ The drivetrain and UWB following work on the bench (wheels in the air); next ste
 - Motor 2 (right): PWM GPIO 10, A GPIO 11, B GPIO 12, encoder A GPIO 39
 - Encoder A wires go through a 10k/20k divider with 1 nF to GND (the encoders output 5V).
 - Lift (MD10C): PWM GPIO 14, DIR GPIO 13, MD10C GND -> ESP32 G
-- Lift encoder: A (yellow) GPIO 42, B (white) GPIO 38, both through a divider
+- Lift encoder: A (yellow) GPIO 42, B (white) GPIO 38, each through a 10k/20k divider (wired and tested)
 - UWB sensor J10: pin 10 (sensor TX) -> GPIO 21, GPIO 47 -> pin 8 (sensor RX), pin 6 GND, pin 2 5V
 - DFR0601 VCC -> ESP32 3V3.
 - **The ESP32 G pin must be connected to the shared ground.** Missing ground caused most early bugs.
@@ -186,6 +187,93 @@ travel, or an encoder wiring problem). There are no limit switches, so keep the 
 **Before the first use:** run `tests/lift_test_encoder.py` with the lift at mid-height, see which DIR moves it
 up, and set `LIFT_UP_DIR` near the top of `follow_me.py` (and `follow_me_bench.py`) to that value (0 or 1).
 It is 0 until that is checked.
+
+## Lift website (`lift_web.py`)
+
+A standalone test that drives the scissor lift from a phone. The ESP32 creates its own Wi-Fi network
+(**BagLift**, password **followme123**) and serves a page at **http://192.168.4.1** with three buttons:
+
+- **UP / DOWN: hold to run.** While you hold a button the phone repeats the command every 150 ms.
+  Let go and the lift stops. If no command arrives for 500 ms (`TIMEOUT_MS`), because the phone locked,
+  Wi-Fi dropped or the page closed, the lift stops by itself.
+- **STOP** stops it immediately.
+- It starts gently (ramps up to 40%, `LIFT_SPEED`) and stops immediately. It only changes direction
+  while the power is 0.
+- It stops if lift encoder A gets no pulses at full power (stuck or at the end of travel, `STALL_CHECK`),
+  or when a limit switch is pressed. After one of those stops, let go of the button before it will move again.
+- The wheel motors are held off the whole time. Ctrl+C / STOP turns the lift off and switches the Wi-Fi off.
+
+It has not been run on the hardware yet. Do the first test below before connecting the motor.
+
+**Wiring** (same as `follow_me.py`):
+- GPIO 14 -> MD10C PWM, GPIO 13 -> MD10C DIR, **MD10C GND -> ESP32 G** (shared ground)
+- MD10C power from the 12V bus, lift motor on the MD10C motor terminals
+- Lift encoder A (yellow) -> GPIO 42 through its 10k/20k divider (used for the stall check)
+
+**Run it from VS Code:** open `lift_web.py`, press **Cmd+Shift+B**, press Enter at the port prompt.
+The terminal shows:
+```
+Lift website ready. Join Wi-Fi BagLift (password followme123), open http://192.168.4.1
+```
+Stop it with **Ctrl+C** in that terminal or the **STOP** task, the same as the other programs. Typing in the
+terminal does nothing in this program; use the web page.
+
+**Connect a phone:**
+1. Settings > Wi-Fi > join **BagLift**, password `followme123`.
+2. The phone will say **"No internet connection"**. That is expected: the ESP32 is not connected to the
+   internet. Choose **stay connected / use this network anyway** (Android: "Keep Wi-Fi connection" or
+   "Use network as is"; iPhone: just stay on it).
+3. Open the browser and type **http://192.168.4.1** (type the `http://`).
+4. The page shows `Stopped` at the top. If it says `No reply from the bag`, check the phone is still on
+   BagLift. If the page will not load at all, turn off mobile data for the test (some phones send everything
+   over mobile data when the Wi-Fi has no internet).
+
+**First test, without the MD10C connected** (nothing can move):
+1. Unplug the MD10C's PWM and DIR wires from the ESP32 (or leave the MD10C unpowered).
+2. In `lift_web.py` set `STALL_CHECK = False` (with no motor there are no encoder pulses, so the stall
+   check would stop it after about 0.7 s).
+3. Run it, connect the phone, and watch the terminal:
+   - Hold **UP**: `LIFT: UP`, then about once a second `LIFT UP  power: 40 % ...`
+   - Let go: `LIFT: STOP (button released)`
+   - Hold **DOWN**: `LIFT: DOWN`. Let go: `LIFT: STOP (button released)`
+   - Timeout: a single command with no repeats must stop by itself. Join **BagLift** on the Mac too
+     (the USB cable stays connected), then in a normal Terminal run:
+     ```bash
+     curl "http://192.168.4.1/cmd?d=up"
+     ```
+     The terminal shows `LIFT: UP`, then half a second later `LIFT: STOP (timeout: no command for 500 ms)`.
+     (Locking the phone or leaving the page while holding also stops it, but as `button released`, because
+     the page sends a stop when it is hidden.)
+4. Set `STALL_CHECK = True` again before connecting the motor.
+
+Then connect the MD10C, put the lift at mid-height, and use short presses first.
+
+**Flip the direction (`UP_DIR`):** if holding UP moves the lift down, change `UP_DIR` at the top of
+`lift_web.py` from 0 to 1 (or 1 to 0). Use the same value for `LIFT_UP_DIR` in `follow_me.py` and
+`follow_me_bench.py`. Set this before adding limit switches, because the top switch only blocks the
+direction the program thinks is UP.
+
+**Add limit switches (optional):**
+1. Use free GPIOs, for example **GPIO 6** (top) and **GPIO 7** (bottom). Avoid pins already used
+   (8-14, 18, 21, 38-42, 47) and GPIO 0, 3, 45, 46 (boot pins).
+2. Wire each switch between its GPIO and **GND** (no resistor needed; the program turns on the internal pull-up).
+   Use the switch's **NC** (normally closed) contact: a broken wire then looks like a pressed switch, so
+   the lift stops instead of running past the end.
+3. In `lift_web.py` set `TOP_LIMIT_PIN = 6` and `BOTTOM_LIMIT_PIN = 7`. Keep `LIMIT_PRESSED = 1` for NC
+   switches (use 0 for NO switches).
+4. Run it and check the page: it shows `| top switch pressed` while you press the switch by hand. With
+   the top switch pressed, UP must refuse (`LIFT: STOP (top limit switch)`) and DOWN must still work.
+   If a pin is set but its switch is not connected, that direction will not move at all (fail-safe).
+
+## One program at a time (lift website vs. follow-me)
+
+The ESP32 runs **one program at a time**. `follow_me.py` (following, lift on terminal keys) and
+`lift_web.py` (lift from the phone) are separate tests for now: running one stops the other, and the
+website does not exist while `follow_me.py` runs.
+
+The plan is to merge them into **one asyncio program** with three parts running together: the
+follow-me loop, the web server and the lift loop, with the wheel/lift interlock from `follow_me.py`.
+That merged program then becomes `main.py`, so it starts at power-up. It has not been written yet.
 
 ## Keyboard shortcut for STOP (one time, per computer)
 

@@ -15,8 +15,8 @@ Status: the drivetrain and UWB distance-following work on the bench (wheels in t
 - Power: 12V LiFePO4 -> 15A fuse -> switch -> 12V bus (DFR0601, MD10C, UBEC). Adafruit 1385 UBEC 12V->5V
   feeds the breadboard rails.
 - UWB: 2x Qorvo DWM3001CDK. Bag board = initiator wired to the ESP32. Tag = responder carried by the person.
-- Lift: FIT0403 motor + Cytron MD10C on GPIO 14 (PWM) and GPIO 13 (DIR); MD10C GND -> ESP32 G.
-  Lift encoder A (yellow) GPIO 42, B (white) GPIO 38, both through dividers. Hardware counters 2 and 3
+- Lift: FIT0403 motor + Cytron MD10C: GPIO 14 -> MD10C PWM, GPIO 13 -> MD10C DIR; MD10C GND -> ESP32 G.
+  Lift encoder A (yellow) GPIO 42, B (white) GPIO 38, each through a 10k/20k divider (wired and tested). Hardware counters 2 and 3
   (wheels use 0 and 1). Which DIR value is UP is NOT confirmed yet (`LIFT_UP_DIR` = 0 placeholder).
 
 ## Pin map (confirmed on hardware)
@@ -28,14 +28,14 @@ Status: the drivetrain and UWB distance-following work on the bench (wheels in t
 | Motor 1 encoder A | **40** | yellow wire via 10k/20k divider + 1 nF to GND |
 | Motor 2 encoder A | **39** | yellow wire via 10k/20k divider + 1 nF to GND |
 | Lift PWM / DIR | 14 / 13 | MD10C PWM / DIR |
-| Lift encoder A / B | 42 / 38 | yellow / white via dividers |
+| Lift encoder A / B | **42** / **38** | yellow / white, each via 10k/20k divider (tested) |
 | UWB sensor TX -> ESP32 RX | 21 | DWM3001CDK J10 pin 10 |
 | ESP32 TX -> UWB sensor RX | 47 | DWM3001CDK J10 pin 8 |
 
 - DFR0601 header VCC (both pins tied) -> ESP32 3V3. GND (both tied) -> ground. A 5V rail section on the
   breadboard is dead (cause unknown), so do not move VCC there.
 - J10 pin 2 -> 5V rail (UBEC), J10 pin 6 -> ground.
-- Encoder B channels (white wires) are NOT confirmed and not used in code.
+- Wheel encoder B channels (white wires) are NOT confirmed and not used in code. (Lift encoder B on GPIO 38 is tested.)
 - The ESP32 G pin MUST be on the shared ground. Missing ground caused most early bugs.
 
 ## UWB setup (already done, saved on the boards)
@@ -60,6 +60,17 @@ Status: the drivetrain and UWB distance-following work on the bench (wheels in t
   -> DRIVE. set_motor/set_lift check the other motors' real PWM duty and on a conflict cut all motors and raise.
   Logic was checked on the Mac in a fake-hardware simulation only (2026-11-18), not on hardware yet.
 - `follow_me_bench.py`: same with 30 / 40 / 100 cm for bench tests (keep it identical apart from those 3 lines).
+- `lift_web.py`: standalone lift test, phone control. ESP32 runs a Wi-Fi access point "BagLift" / "followme123"
+  (network.WLAN AP_IF, WPA2) and an asyncio web server on port 80 at http://192.168.4.1: hold-to-run UP / DOWN
+  (page repeats the command every 150 ms, sends stop on release / page hidden; commands carry a page id + sequence
+  number so out-of-order requests are dropped) and STOP. Lift loop every 50 ms: stops if no UP/DOWN for 500 ms
+  (TIMEOUT_MS), ramps up 10%/0.1 s to 40% (LIFT_SPEED), stops immediately, changes DIR only at 0 power.
+  Stall stop on encoder A (GPIO 42, Counter 2; STALL_CHECK) and optional limit switches (TOP/BOTTOM_LIMIT_PIN,
+  default None; pull-up to GND, LIMIT_PRESSED = 1 for NC). Stall/limit stops latch until the button is released.
+  Wheels held off. Terminal prints `LIFT: UP` / `LIFT: DOWN` / `LIFT: STOP (<reason>)`. finally: motors off, AP off.
+  Settings block at the top (UP_DIR = 0 placeholder, same meaning as LIFT_UP_DIR). Runs with the normal Run task,
+  stops with Ctrl+C / STOP task. Written 2026-11-19 and checked on the Mac only (CPython + fake machine/network,
+  real HTTP requests); NOT run on hardware yet.
 - `tests/`: lift_test_encoder.py (lift DIR 0 then DIR 1, counts A/B, wheels held off), motor_check.py, motor_match.py, uwb_distance.py, uwb_test.py, uwb_send_commands.py, uwb_baud_scan.py,
   loop_test.py (harmless counter for stop tests).
 - `tools/esp32.py`: host-side run/stop wrapper (Mac; Windows branches untested). `run` uses mpremote's
@@ -107,5 +118,9 @@ Status: the drivetrain and UWB distance-following work on the bench (wheels in t
 - Confirm the tag keeps ranging on the power bank over long runs (some power banks shut off at low current).
 - Lift: confirm which DIR is UP with tests/lift_test_encoder.py, set LIFT_UP_DIR in both follow files.
   Test the new esp32.py run (typing reaches the board) with tests/loop_test.py, then the lift keys.
-- Later: two anchors for steering; ultrasonic/ToF for obstacles and stairs; lift control via an
-  ESP32-hosted Wi-Fi web page with hold-to-run and timeout (reuse the interlock in follow_me.py).
+- Lift website: first hardware test of lift_web.py without the MD10C connected (STALL_CHECK = False, watch for
+  LIFT: UP / STOP / timeout), then with the motor; set UP_DIR to match LIFT_UP_DIR; add limit switches.
+- MERGE PLAN: the ESP32 runs one program at a time, so follow_me.py and lift_web.py are separate tests for now.
+  Merge them into one asyncio program (follow-me loop + web server + lift loop, keeping the wheel/lift interlock
+  from follow_me.py) that becomes main.py (ask before uploading as main.py). Not written yet.
+- Later: two anchors for steering; ultrasonic/ToF for obstacles and stairs.
