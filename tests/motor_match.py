@@ -10,6 +10,10 @@ MAX_BAD = 20        # this many rejected readings in a row (2 s) = real speed ch
 MAX_STEP = 2.0      # most M1 power can change in one 0.1 s step (%)
 FILTER_NS = 10000   # ignore encoder pulses shorter than 10 microseconds
 
+# Lift (MD10C) held OFF: a floating GPIO 14 can run the lift
+PWM(Pin(14), freq=1000, duty_u16=0)
+Pin(13, Pin.OUT, value=0)
+
 pwm1 = PWM(Pin(18), freq=1000)
 ina1 = Pin(8, Pin.OUT)
 inb1 = Pin(9, Pin.OUT)

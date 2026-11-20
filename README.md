@@ -25,8 +25,9 @@ The drivetrain and UWB following work on the bench (wheels in the air); next ste
 | `tests/uwb_baud_scan.py` | Checks the UART line and tries common baud rates |
 | `tests/lift_test_encoder.py` | Runs the lift a short way in DIR 0 then DIR 1 and counts lift encoder A and B (wheels held off) |
 | `tests/loop_test.py` | Harmless counter loop (no pins) for testing that stopping works |
-| `tools/esp32.py` | Runs a file on the ESP32 so Ctrl+C really stops it and what you type reaches the program, plus a `stop` command (runs on your computer, not the board) |
-| `.vscode/tasks.json` | VS Code tasks: Run, STOP, upload as main.py, REPL, list files, list devices |
+| `tests/mcu_check.py` | New-board check, nothing wired: firmware, flash, PSRAM, pulse counter, RGB LED (GPIO 48), Wi-Fi scan |
+| `tools/esp32.py` | Runs a file on the ESP32 so Ctrl+C really stops it and what you type reaches the program, plus `stop`, `mp` (mpremote with the fixes for this board) and `port`. Finds the board by itself (runs on your computer, not the board) |
+| `.vscode/tasks.json` | VS Code tasks: Run, STOP, upload as main.py, REPL, list files, list devices (no port prompt) |
 | `CLAUDE.md` | Full project notes (hardware, wiring, UWB setup, rules) |
 
 ## Pins
@@ -64,24 +65,61 @@ The drivetrain and UWB following work on the bench (wheels in the air); next ste
    ```
    (Git asks you to sign in to GitHub the first time; the easiest way is `brew install gh` then `gh auth login`.)
 4. **Open the folder in VS Code:** File > Open Folder > `follow-me-bag`.
-5. **Plug in the ESP32** (USB-C port labelled UART / the CP2102N one) and find its port:
+5. **Plug in the ESP32 by its "COM" USB-C port** (not the one labelled "USB"; see "The ESP32 board" below)
+   and check that it is found:
    ```bash
-   mpremote devs
+   python3 tools/esp32.py port
    ```
-   The ESP32 is the `/dev/cu.usbserial-…` line (for example `/dev/cu.usbserial-130`; the number depends on
-   which USB port you use). UWB boards show up as `/dev/cu.usbmodem…`.
+   It prints something like `/dev/cu.usbmodem595B0699471` (USB id `1a86:55d3`, shown by `mpremote devs`).
    No USB driver is needed on recent macOS.
 6. **Test that run and stop work** with the harmless loop: open `tests/loop_test.py`, press **Cmd+Shift+B**,
-   press Enter at the port prompt (or type your port), then press **Ctrl+C** in that terminal.
+   then press **Ctrl+C** in that terminal.
    You should see `STOPPED: program interrupted, board idle at the >>> prompt.`
 
 From a normal Terminal (instead of VS Code):
 ```bash
-python3 tools/esp32.py run tests/loop_test.py --port /dev/cu.usbserial-130
+python3 tools/esp32.py run tests/loop_test.py
 ```
 ```bash
 python3 tools/esp32.py stop
 ```
+
+## The ESP32 board (ESP32-S3-N8R2, two USB-C ports)
+
+Since 2026-11-20 the board is an ESP32-S3-N8R2 DevKitC-style clone (8 MB flash, 2 MB PSRAM) with
+MicroPython v1.29.0. It has two USB-C ports:
+
+| Port | Chip | Mac name | Use it for |
+|---|---|---|---|
+| **COM** | WCH CH343 USB-serial (`1a86:55d3`) | `/dev/cu.usbmodem595B0699471` | **Everything**: run, stop, REPL, files |
+| **USB** | ESP32-S3 native USB Serial/JTAG (`303a:1001`) | `/dev/cu.usbmodem101` | Flashing firmware only |
+
+- **Always use the COM port.** With only the USB port plugged in, the board starts in download mode
+  every time (even after RST), so MicroPython never runs and there is no REPL there.
+- **Use `tools/esp32.py`, not plain mpremote, for running files.** On the COM port the Mac loses bytes
+  when data is sent faster than the board's serial line takes it, so plain `mpremote run` of a bigger
+  file fails with random `SyntaxError`s. `tools/esp32.py` sends data in 64-byte pieces at line speed.
+  For other mpremote commands use `python3 tools/esp32.py mp ...`, for example:
+  ```bash
+  python3 tools/esp32.py mp ls
+  ```
+  ```bash
+  python3 tools/esp32.py mp cp myfile.py :
+  ```
+  ```bash
+  python3 tools/esp32.py mp exec "print(1+1)"
+  ```
+- **Reset lines:** the board resets when DTR and RTS differ. mpremote and `tools/esp32.py` keep both on,
+  which never resets it. Thonny and `screen` may reset it when they connect; that is harmless.
+- **Wi-Fi resets the board when it runs from the Mac's USB port** (`rst:0x1 (POWERON)` in the log as soon as
+  Wi-Fi turns on). That is a power dip, not a code bug. If `tools/esp32.py run` sees the board reboot it
+  prints a WARNING and exits. Try a short, good USB-C cable or a powered hub; on the bag the board gets 5 V from
+  the UBEC instead.
+- **RGB LED** is on GPIO 48 (`tests/mcu_check.py` showed green on 48, nothing on 38), so lift encoder B
+  on GPIO 38 does not clash with it.
+- **Flashing** (only if needed): move the cable to the USB port (the board is already in download mode
+  there), use esptool on `/dev/cu.usbmodem101` with `--before no_reset --after no_reset`, then move the
+  cable back to COM and press RST. Flashing through the COM port fails (the same lost-bytes problem).
 
 ## Setup on Windows
 
@@ -89,10 +127,10 @@ python3 tools/esp32.py stop
    - VS Code: https://code.visualstudio.com
    - Python 3: https://www.python.org/downloads/ . In the installer, **tick "Add python.exe to PATH"**.
    - Git: https://git-scm.com/download/win (default options are fine).
-2. **USB driver:** the ESP32 DevKit uses a Silicon Labs CP2102N USB chip. Windows 10/11 usually installs the
-   driver by itself. If the board does not appear under Device Manager > Ports (COM & LPT), install the
-   "CP210x Universal Windows Driver" from
-   https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers , then unplug and replug the board.
+2. **USB driver:** plug the board in by its **COM** port. It uses a WCH CH343 USB chip, which Windows 10/11
+   normally drives with its built-in USB serial driver. If the board does not appear under Device Manager >
+   Ports (COM & LPT), install WCH's CH343 driver (wch-ic.com, search "CH343SER"), then unplug and replug
+   the board.
 3. **Install mpremote** in PowerShell (or Command Prompt):
    ```powershell
    python -m pip install mpremote
@@ -110,21 +148,20 @@ python3 tools/esp32.py stop
    ```powershell
    python -m mpremote devs
    ```
-   The ESP32 is the COM port with `10c4:ea60` (Silicon Labs), for example `COM5`. You can also check Device
-   Manager > Ports (COM & LPT): "Silicon Labs CP210x USB to UART Bridge (COM5)".
-7. **Test that run and stop work** with the harmless loop: open `tests/loop_test.py`, press **Ctrl+Shift+B**.
-   The port prompt shows the Mac default; **replace it with your COM port** (for example `COM5`) and press Enter.
-   Then press **Ctrl+C** in that terminal. You should see
+   The ESP32 is the COM port with `1a86:55d3` (WCH), for example `COM5`. `python tools\esp32.py port`
+   should print the same port.
+7. **Test that run and stop work** with the harmless loop: open `tests/loop_test.py`, press **Ctrl+Shift+B**,
+   then press **Ctrl+C** in that terminal. You should see
    `STOPPED: program interrupted, board idle at the >>> prompt.`
 
-   To skip typing the port in the STOP task and the terminal, set it once (then open a new VS Code window):
+   If the port is not found automatically, set it once (then open a new VS Code window):
    ```powershell
    setx ESP32_PORT COM5
    ```
 
 From PowerShell (instead of VS Code):
 ```powershell
-python tools\esp32.py run tests\loop_test.py --port COM5
+python tools\esp32.py run tests\loop_test.py
 ```
 ```powershell
 python tools\esp32.py stop
@@ -139,15 +176,14 @@ python tools\esp32.py stop
 
 Shortcuts: **Cmd** on Mac = **Ctrl** on Windows.
 
-- **Run the open file:** Cmd+Shift+B, enter the port at the prompt.
+- **Run the open file:** Cmd+Shift+B (the port is found automatically; override with `ESP32_PORT`).
   Output appears in the terminal panel. The task runs `tools/esp32.py run`, a small wrapper around mpremote.
   Anything you type in that terminal and send with Enter goes to the program (used for the lift keys).
 - **Stop it (motors off), two ways that both work:**
   1. Click in the Run terminal and press **Ctrl+C** (Ctrl+C on Mac too). The wrapper sends Ctrl-C to the ESP32
      and checks that it stopped.
   2. Run the task **ESP32: STOP program (motors off)** (Terminal > Run Task), or press the shortcut you set up
-     below. It works from anywhere in VS Code, even if the Run terminal is closed or stuck, and does not ask
-     for a port.
+     below. It works from anywhere in VS Code, even if the Run terminal is closed or stuck.
 
   Both print `STOPPED: program interrupted, board idle at the >>> prompt.` when it worked, after the
   program's own output (for the motor programs, `Motors stopped` from their `finally` block).
@@ -210,7 +246,8 @@ It has not been run on the hardware yet. Do the first test below before connecti
 - MD10C power from the 12V bus, lift motor on the MD10C motor terminals
 - Lift encoder A (yellow) -> GPIO 42 through its 10k/20k divider (used for the stall check)
 
-**Run it from VS Code:** open `lift_web.py`, press **Cmd+Shift+B**, press Enter at the port prompt.
+**Run it from VS Code:** open `lift_web.py`, press **Cmd+Shift+B**.
+(On the new board, Wi-Fi reset the ESP32 when powered from the Mac's USB port; see "The ESP32 board".)
 The terminal shows:
 ```
 Lift website ready. Join Wi-Fi BagLift (password followme123), open http://192.168.4.1

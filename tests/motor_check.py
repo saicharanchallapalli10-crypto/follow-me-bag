@@ -5,6 +5,10 @@ import time
 TEST_SPEED = 50     # % power for each test
 RUN_TIME = 3        # seconds per test
 
+# ---------------- Lift (MD10C) held OFF: a floating GPIO 14 can run the lift ----------------
+PWM(Pin(14), freq=1000, duty_u16=0)
+Pin(13, Pin.OUT, value=0)
+
 # ---------------- Motors ----------------
 pwm1 = PWM(Pin(18), freq=1000, duty_u16=0)
 ina1 = Pin(8, Pin.OUT, value=0)

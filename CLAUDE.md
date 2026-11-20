@@ -4,13 +4,38 @@ Forge (Northeastern) team project: an autonomous bag that follows a person. The 
 repo (SaiCharan, 2nd-year EE) handles the electronics, UWB tracking and drivetrain code.
 Current team scope: front-wheel drive, straight-line following (distance only, no steering yet).
 
-Status: the drivetrain and UWB distance-following work on the bench (wheels in the air).
+Status: the drivetrain and UWB distance-following work on the bench (wheels in the air), re-confirmed on the
+new ESP32-S3 + Freenove breakout on 2026-11-20.
 `follow_me_bench.py` was confirmed working. Next: mount on the bag and test on the ground.
 
 ## Hardware
 
-- MCU: ESP32-S3 DevKit (WROOM-1), MicroPython v1.29.0. `machine.Counter` (hardware pulse counter with
-  `filter_ns`) is available and in use.
+- MCU (replaced 2026-11-20, the old CP2102N DevKit died): ESP32-S3-N8R2 DevKitC-style clone (8 MB flash,
+  2 MB PSRAM, chip rev v0.2, MAC 28:37:2f:f8:ba:9c), MicroPython v1.29.0 ESP32_GENERIC_S3, 160 MHz.
+  `machine.Counter` (hardware pulse counter with `filter_ns`) is available and in use.
+  Two USB-C ports: "COM" = WCH CH343 (1a86:55d3, `/dev/cu.usbmodem595B0699471`) = the ONLY port with the REPL.
+  "USB" = native USB Serial/JTAG (303a:1001, `/dev/cu.usbmodem101`): with only that port plugged in the chip
+  always starts in download mode (even after RST without BOOT; boot:0x0), so it is for flashing only
+  (esptool stub + flash work there; on COM, large esptool transfers fail).
+  RGB LED is on GPIO 48 (mcu_check 2026-11-20: green lit, blue on GPIO 38 did not), so GPIO 38 is free for lift encoder B.
+  Wi-Fi activation reset the board (rst:0x1 POWERON, 3 of 3 tries) when powered from the Mac's USB port:
+  supply dip. Not yet tried on another cable/hub or the UBEC 5V rail. Matters for lift_web.py.
+  2026-11-20: board moved onto a Freenove ESP32-S3 breakout (no wiring file in the repo yet). In the breakout the
+  "USB" port runs MicroPython: native USB CDC 303a:4001, `/dev/cu.usbmodem101`. Plain mpremote is reliable there
+  (15.5 KB run OK, no pacing needed); esp32.py auto-detect prefers it over the COM port.
+- One-motor test 2026-11-20 on the new board/breakout (tests/test_each_channel.py: channel 1 then channel 2,
+  30% fwd/rev, never both, ~9.6 s; tests/test_one_motor.py = channel 2 only). The "wheel 1" motor is on DFR0601
+  CHANNEL 2 (GPIO 10/11/12). WORKING on the 7th run: its encoder (yellow, via divider) is on **GPIO 39**
+  (GPIO 40 stayed 0). At 29% duty: ~230 rising edges per 0.25 s (~920/s); forward total 1347, reverse 1349
+  (symmetric). At 80% (tests/test_one_motor.py, 1 s ramps, 1.5 s hold): ~627 per 0.25 s forward (~2500/s),
+  ~622 reverse; totals 6235 / 6184. Channel 1 (no motor) correctly gave 0 counts. This matches the pin map (channel 2 encoder = 39).
+  Channel 1 with the second wheel motor (tests/test_one_motor.py, CHANNEL = 1, 30%): encoder on **GPIO 40**
+  (GPIO 39 stayed 0). ~230 per 0.25 s forward, ~224 reverse; totals 2234 / 2176. Matches the pin map
+  (channel 1 encoder = 40) and matches the channel 2 motor at 30% (~230). Both wheel channels now confirmed.
+  The first six runs gave no movement: the DFR0601 was unpowered at first; the final fix was not identified
+  (user reseated jumpers between breakout and DFR0601; nothing reported changed before the working run, so
+  suspect a loose connection). Thonny can leave the board where Ctrl-C gets no prompt; esp32.py stop recovers
+  it. Quit Thonny before using the tools.
 - Motor driver: DFRobot DFR0601 (dual 12A). Wheel motors: 2x DFRobot FIT0186 (12V, Hall encoders).
 - Power: 12V LiFePO4 -> 15A fuse -> switch -> 12V bus (DFR0601, MD10C, UBEC). Adafruit 1385 UBEC 12V->5V
   feeds the breadboard rails.
@@ -18,6 +43,24 @@ Status: the drivetrain and UWB distance-following work on the bench (wheels in t
 - Lift: FIT0403 motor + Cytron MD10C: GPIO 14 -> MD10C PWM, GPIO 13 -> MD10C DIR; MD10C GND -> ESP32 G.
   Lift encoder A (yellow) GPIO 42, B (white) GPIO 38, each through a 10k/20k divider (wired and tested). Hardware counters 2 and 3
   (wheels use 0 and 1). Which DIR value is UP is NOT confirmed yet (`LIFT_UP_DIR` = 0 placeholder).
+  2026-11-20, new board: tests/lift_test_encoder.py ran (40%, ~1 s per direction, both wheel channels held off):
+  motor runs, encoder A and B both count and agree (~123 per 0.1 s each, ~1230/s). Totals DIR 0: A 1747 B 1749,
+  DIR 1: A 1753 B 1754. Nearly identical speeds both ways, and the user could not see the direction, so it is
+  NOT yet proven that DIR (GPIO 13) actually reverses the motor. Rising-edge counts carry no direction.
+  Quadrature direction is available: this firmware's machine.Counter (frozen machine.py) rejects a Pin for
+  `direction`, but `esp32.PCNT(2, pin=A, rising=esp32.PCNT.INCREMENT, mode_pin=B, mode_low=esp32.PCNT.REVERSE,
+  filter=1000)` works (checked with inputs only); its count goes up one way and down the other.
+  Rerun on the screw-terminal setup (after the bench test): same result, no stall, A/B agree (~124 per 0.1 s);
+  totals DIR 0: A 1781 B 1779, DIR 1: A 1767 B 1767. User again could not tell the direction.
+  DIR PROVEN with tests/lift_direction.py (quadrature count via esp32.PCNT, 40%, ~1 s each way): DIR 0 = -1771,
+  DIR 1 = +1765 (opposite signs, same speed ~124 per 0.1 s). So GPIO 13 reverses the lift; negative count = DIR 0,
+  positive = DIR 1. Which of them is UP is still not seen (LIFT_UP_DIR stays 0 placeholder).
+  Find-UP run (lift_direction.py WATCH_DIR = 0: 30%, 2.5 s, then back): DIR 0 = -2532, DIR 1 = +2572 (~90 per
+  0.1 s at 30%), ended about where it started, no stall. User saw the motor turn COUNTER-CLOCKWISE in the second
+  half, so DIR 1 = CCW (positive count), DIR 0 = CW (negative count), viewing direction not recorded.
+  The scissor lift itself is NOT attached yet (2026-11-20): these were the lift motor's gears only. UP cannot be
+  known until the lift is mounted: then run tests/lift_direction.py (WATCH_DIR = 0) with the lift at
+  mid-height, see whether DIR 0 (CW) raises or lowers it, and set LIFT_UP_DIR (follow files) and UP_DIR (lift_web.py).
 
 ## Pin map (confirmed on hardware)
 
@@ -25,13 +68,45 @@ Status: the drivetrain and UWB distance-following work on the bench (wheels in t
 |---|---|---|
 | Motor 1 (left) PWM / A / B | 18 / 8 / 9 | DFR0601 P1 / A1 / B1 |
 | Motor 2 (right) PWM / A / B | 10 / 11 / 12 | DFR0601 P2 / A2 / B2 |
-| Motor 1 encoder A | **40** | yellow wire via 10k/20k divider + 1 nF to GND |
-| Motor 2 encoder A | **39** | yellow wire via 10k/20k divider + 1 nF to GND |
+| Motor 1 encoder A | **40** | yellow wire via 10k/20k divider + 1 nF to GND (re-confirmed on new board 2026-11-20: channel 1 motor) |
+| Motor 2 encoder A | **39** | yellow wire via 10k/20k divider + 1 nF to GND (re-confirmed on new board 2026-11-20: channel 2 motor) |
 | Lift PWM / DIR | 14 / 13 | MD10C PWM / DIR |
 | Lift encoder A / B | **42** / **38** | yellow / white, each via 10k/20k divider (tested) |
 | UWB sensor TX -> ESP32 RX | 21 | DWM3001CDK J10 pin 10 |
 | ESP32 TX -> UWB sensor RX | 47 | DWM3001CDK J10 pin 8 |
 
+- Current setup (2026-11-20): ESP32-S3-N8R2 in the Freenove breakout, all connections on its screw terminals.
+  DFR0601 P1/A1/B1 = GPIO 18/8/9 (channel 1), P2/A2/B2 = GPIO 10/11/12 (channel 2). DFR0601 VCC (both pins
+  jumpered) -> ESP32 3V3 only; DFR0601 GND (both jumpered) -> breadboard - rail; ESP32 GND -> breadboard - rail.
+  Wheel encoders (yellow via 10k/20k dividers) on GPIO 39 / 40, white wires unused. UWB bag board J10:
+  pin 8 <- GPIO 47, pin 10 -> GPIO 21, pin 2 -> 5V rail, pin 6 -> GND; auto-starts ranging (initf, UART 1 saved).
+  Tag on a power bank via J9, ranges on its own.
+  Pairing check on this setup (tests/test_each_channel.py, 30%): BOTH wheels turned, but channel 1 gave 0 counts
+  on GPIO 39 and 40, and channel 2 gave IDENTICAL counts on BOTH 39 and 40 (1317/1316 fwd, 1338/1338 rev).
+  GPIO 39 and 40 are not shorted to each other at the board (driving one does not move the other), so both
+  dividers are fed from the channel 2 motor's yellow wire, and the channel 1 encoder (yellow wire or its 5V/GND)
+  reaches neither. Wiring must be fixed before follow_me_bench.py (speed matching would see equal counts).
+  enc1_pin = 40 / enc2_pin = 39 left unchanged in the code (matched the earlier per-channel tests).
+  UWB on this setup: tests/uwb_distance.py gave 54 SUCCESS readings in ~10 s (~5 Hz), 28-58 cm. Parser OK.
+  SAFETY 2026-11-20: running tests/test_one_motor.py on CHANNEL 1 alone, the LIFT motor ran at the same time
+  as motor 1 (user report). That test did not configure GPIO 14/13, so the MD10C PWM input was floating
+  (likely picks up the channel 1 PWM), or GPIO 18 is also wired to MD10C PWM. Channel 1 encoder again 0 on 39/40.
+  Fix: every wheel test now holds lift PWM 14 = 0 / DIR 13 = 0 (test_one_motor, test_each_channel, motor_check,
+  motor_match), like lift_test_encoder holds the wheels. RULE: every program must drive ALL motor pins
+  (wheels + lift) to 0 at the start. Consider a 10k pull-down on MD10C PWM to GND (keeps the lift off at boot).
+  CONFIRMED: rerun of channel 1 with the lift held off: lift stayed still, and channel 1's encoder counted on
+  GPIO 40 only (~224 per 0.25 s, totals 2204 / 2173), GPIO 39 = 0. So the floating lift PWM was the cause, and
+  the missing/doubled encoder counts in the earlier runs went away with it (exact mechanism not identified;
+  likely the lift running alongside disturbed the encoder signals).
+  PAIRING CONFIRMED on the screw-terminal setup (test_one_motor.py, lift held off, 30%): channel 1 -> GPIO 40 only
+  (~224 per 0.25 s), channel 2 -> GPIO 39 only (~224 fwd / ~228 rev; totals 2204 / 2232). Matches enc1_pin = 40,
+  enc2_pin = 39 in follow_me.py and follow_me_bench.py, so no code change. Both motors run at the same speed.
+  BENCH TEST PASSED on the new setup (follow_me_bench.py, ~75 s, stopped with esp32.py stop -> "Motors stopped"):
+  never moved at <= 30 cm, never stayed still with target > 0, started past 40 cm (4 starts), stopped at
+  <= 30 cm (4 stops), reached 80% beyond 100 cm (max 129 cm), slowed smoothly coming back, no NO TAG, lift
+  stayed off. Encoders while moving: |M1-M2| mean 0.7, max 4 counts per 0.1 s (max 6%); trim stayed
+  -0.6..+0.1 %, so the motors are naturally matched. Counts per 0.1 s by power: ~110 @30-40%, 131 @40%,
+  167 @50%, 196 @60%, 231 @70%, 245 @80%.
 - DFR0601 header VCC (both pins tied) -> ESP32 3V3. GND (both tied) -> ground. A 5V rail section on the
   breadboard is dead (cause unknown), so do not move VCC there.
 - J10 pin 2 -> 5V rail (UBEC), J10 pin 6 -> ground.
@@ -71,22 +146,42 @@ Status: the drivetrain and UWB distance-following work on the bench (wheels in t
   Settings block at the top (UP_DIR = 0 placeholder, same meaning as LIFT_UP_DIR). Runs with the normal Run task,
   stops with Ctrl+C / STOP task. Written 2026-11-19 and checked on the Mac only (CPython + fake machine/network,
   real HTTP requests); NOT run on hardware yet.
+- `tests/mcu_check.py`: new-board check, nothing wired (firmware, flash, PSRAM, Counter on GPIO 40 input, RGB LED
+  green on 48 then blue on 38, Wi-Fi scan last because it can reset the board on weak USB power). Ends by itself.
 - `tests/`: lift_test_encoder.py (lift DIR 0 then DIR 1, counts A/B, wheels held off), motor_check.py, motor_match.py, uwb_distance.py, uwb_test.py, uwb_send_commands.py, uwb_baud_scan.py,
   loop_test.py (harmless counter for stop tests).
 - `tools/esp32.py`: host-side run/stop wrapper (Mac; Windows branches untested). `run` uses mpremote's
   SerialTransport (same upload as `mpremote run`, which never forwards keyboard input) and forwards typed lines
-  to the program's stdin. The new `run` was checked against a fake board on a pty, not yet on the ESP32.
-  Not uploaded to the board.
+  to the program's stdin. Also `mp` (paced mpremote passthrough) and `port`. `run` (output, finishing, reboot
+  detection) and `stop` verified on the new ESP32 2026-11-20; typed-line forwarding to stdin not yet tested on
+  hardware. Not uploaded to the board.
 
 ## Running code (macOS)
 
 - mpremote is installed at `~/Library/Python/3.9/bin` (added to PATH in ~/.zprofile). `python3 -m mpremote` also works.
-- Ports: ESP32 = `/dev/cu.usbserial-130` (CP2102N; number depends on which Mac USB port).
-  Tag = `/dev/cu.usbmodemE3C6089B3B5D1`. Bag UWB board = `/dev/cu.usbmodemFD1995DCFB7D1`.
-  Check with `mpremote devs`. Always pass the ESP32 port explicitly; auto-connect may pick a UWB board.
+- Ports: ESP32 = `/dev/cu.usbmodem595B0699471` (CH343 "COM" port; the name comes from the chip serial, so it
+  does not change with the Mac USB port). Tag = `/dev/cu.usbmodemE3C6089B3B5D1`.
+  Bag UWB board = `/dev/cu.usbmodemFD1995DCFB7D1`. All are usbmodem now, so never rely on mpremote auto-connect.
+- `tools/esp32.py` auto-detects the ESP32 by USB id (WCH 1a86:55d3/55d4, else CP210x; never UWB boards;
+  says "move the cable to COM" if only 303a:1001 is seen). Override with `--port` or `$ESP32_PORT`.
+  `python3 tools/esp32.py port` prints it.
+- COM-port data loss (found 2026-11-20): the CH343 + macOS driver drops host->board bytes whenever a write is
+  queued while earlier bytes are still going out at 115200. Plain `mpremote run` of a 3 KB file failed 10/10
+  (random SyntaxError/NameError); `mpremote cp` happened to survive (small exec per chunk). Raw-paste window is
+  128 and the board acks correctly, so it is not the firmware (esptool's ROM loader fails the same way).
+  Fix in esp32.py: every serial write is split into 64-byte pieces, each sent only after the previous one has
+  had time to go out (10 bits/byte at 115200, +25%). Verified: 15.5 KB run 3/3, cp of follow_me.py matches SHA-256.
+  Pacing is on for WCH ports (ESP32_PACE=1/0 forces it on/off). Use `python3 tools/esp32.py mp <mpremote args>`
+  (= `mpremote connect <port> ...` with pacing) instead of plain mpremote for anything bigger than a short exec.
+  Untried alternative: WCH's own macOS CH34x driver (would show the port as /dev/cu.wchusbserial*).
+- DTR/RTS on COM: the board resets when DTR != RTS (classic two-transistor auto-reset). DTR=RTS=1 never resets it
+  (verified by uptime across connections); pyserial/mpremote default open and mpremote's close are safe.
+  pyserial with dtr=rts=False set before open DOES reset it (macOS raises both on open, pyserial clears DTR first).
+- `esp32.py run` now exits with a WARNING if it sees the ROM banner `ESP-ROM:` (board rebooted mid-program).
 - Run: `python3 tools/esp32.py run <file>.py` (VS Code: Cmd+Shift+B). Stop: Ctrl+C in that terminal, or
-  `python3 tools/esp32.py stop` (VS Code task "ESP32: STOP program (motors off)", no port prompt).
-  Default port /dev/cu.usbserial-130 (override with `--port` or `$ESP32_PORT`; falls back to the only usbserial port).
+  `python3 tools/esp32.py stop` (VS Code task "ESP32: STOP program (motors off)"). No VS Code task asks for a
+  port any more; upload/remove main.py, REPL and ls tasks go through `esp32.py mp`.
+  Run and stop verified on the new board 2026-11-20 with tests/loop_test.py (`finally ran`, idle at >>>).
 - Why: plain `mpremote run` exits on Ctrl+C (`sys.exit(1)` in mpremote's commands.py) without sending Ctrl-C
   to the board, so the program and motors keep running. Never run motor programs with plain `mpremote run`.
   `tools/esp32.py stop` kills local mpremote/run processes, sends ONE Ctrl-C (a second one too soon
@@ -116,8 +211,12 @@ Status: the drivetrain and UWB distance-following work on the bench (wheels in t
 - Ground test on the bag; start with MAX_SPEED around 50.
 - Optional arming step: don't move after power-up until the tag has first been seen within STOP_DIST.
 - Confirm the tag keeps ranging on the power bank over long runs (some power banks shut off at low current).
-- Lift: confirm which DIR is UP with tests/lift_test_encoder.py, set LIFT_UP_DIR in both follow files.
+- Lift: DIR reversal proven (DIR 0 = CW, DIR 1 = CCW at the gearbox). Once the scissor lift is mounted, find UP
+  with tests/lift_direction.py (WATCH_DIR = 0), set LIFT_UP_DIR in both follow files and UP_DIR in lift_web.py.
   Test the new esp32.py run (typing reaches the board) with tests/loop_test.py, then the lift keys.
+- New board: fix the Wi-Fi reset (try a short/good cable or powered hub; check on the UBEC 5V rail) before
+  lift_web.py; re-run tests/mcu_check.py to confirm "wifi scan: OK". Re-check every wiring pin on the new board
+  (same pin map, untested on this board).
 - Lift website: first hardware test of lift_web.py without the MD10C connected (STALL_CHECK = False, watch for
   LIFT: UP / STOP / timeout), then with the motor; set UP_DIR to match LIFT_UP_DIR; add limit switches.
 - MERGE PLAN: the ESP32 runs one program at a time, so follow_me.py and lift_web.py are separate tests for now.

@@ -3,9 +3,22 @@
 
     python3 tools/esp32.py run <file.py> [--port PORT]
     python3 tools/esp32.py stop [--port PORT]
+    python3 tools/esp32.py mp <mpremote args>      e.g.  mp ls   mp cp a.py :   mp exec "print(1)"   mp repl
+    python3 tools/esp32.py port                    prints the port it would use
 
 Why this exists: when `mpremote run` gets Ctrl+C it only exits on the Mac. It never sends
 Ctrl-C to the board, so the program (and the motors) keep running on the ESP32.
+
+Board (since 2026-11-20): ESP32-S3-N8R2 DevKitC clone, cable in the "COM" USB-C port (WCH CH343,
+USB id 1a86:55d3, macOS name /dev/cu.usbmodem<serial>). Two quirks this file handles:
+- Pacing: the CH343 + macOS driver loses data when a new write arrives while earlier bytes are still
+  being sent (plain `mpremote run` of a 3 KB file failed 10/10). Every write is cut into 64-byte pieces
+  and the next piece waits until the previous one has gone out at 115200 baud. `mp` gives mpremote
+  the same pacing. Plain `mpremote` is fine for small things (ls, short exec) but not for `run`.
+- DTR/RTS: the board resets when DTR and RTS differ (classic auto-reset circuit). DTR=RTS=1 (pyserial's
+  default on open, and what this file sets) never resets it; mpremote's close order is also safe.
+The "USB" port (native USB Serial/JTAG, 303a:1001) is for flashing only: on that port alone the board
+always starts in download mode, so there is no REPL there.
 
 run:  sends FILE to the board the same way `mpremote run` does (mpremote's own serial code),
       shows its output, and sends each line you type (+ Enter) to the program's input
@@ -15,14 +28,14 @@ stop: ends any mpremote/run process using the ESP32, opens the port, sends ONE C
       (KeyboardInterrupt -> the program's finally block turns the motors off), waits for
       the REPL prompt, and checks the board has gone quiet.
 
-Port: --port, else $ESP32_PORT, else /dev/cu.usbserial-130. If that port does not exist
-and exactly one /dev/cu.usbserial-* port exists, that one is used.
+Port: --port, else $ESP32_PORT, else auto-detect by USB id: the only WCH CH343/CH9102 port
+(1a86:55d3 / 55d4), else the only CP210x port (old board). UWB boards (Qorvo/SEGGER) are never
+picked. If only the ESP32's native "USB" port is found, it says to move the cable to "COM".
+Pacing is on for WCH ports; force it with ESP32_PACE=1 or turn it off with ESP32_PACE=0.
 
-Windows (use `python` instead of `python3`): port is --port or $ESP32_PORT (e.g. COM5),
-else the only CP210x (Silicon Labs) COM port. The Windows branches below are marked
-`if WINDOWS:`; the macOS code paths are unchanged from the hardware-tested version.
+Windows (use `python` instead of `python3`): same auto-detect (COM ports via pyserial).
+Windows paths are untested.
 """
-import glob
 import os
 import queue
 import signal
@@ -31,8 +44,13 @@ import sys
 import threading
 import time
 
-DEFAULT_PORT = "/dev/cu.usbserial-130"
 WINDOWS = os.name == "nt"
+BAUD = 115200
+
+VID_WCH = 0x1A86          # CH343 / CH9102: the "COM" port of the current ESP32-S3 board
+PIDS_WCH = (0x55D3, 0x55D4)
+VID_CP210X = 0x10C4       # CP2102N: the old DevKit
+VID_ESPRESSIF = 0x303A    # 0x1001 = native USB Serial/JTAG ("USB" port, flashing only)
 
 
 def say(*args):
@@ -43,37 +61,76 @@ def say(*args):
         pass
 
 
-def pick_port(arg_port):
-    if arg_port:
-        return arg_port
-    if WINDOWS:
-        return pick_port_windows()
-    port = os.environ.get("ESP32_PORT", DEFAULT_PORT)
-    if os.path.exists(port):
-        return port
-    found = glob.glob("/dev/cu.usbserial-*")
-    if len(found) == 1:
-        say("note:", port, "not found, using", found[0])
-        return found[0]
-    say("ERROR: ESP32 port", port, "not found. usbserial ports:", found or "none")
-    say("Run `mpremote devs` and pass --port.")
-    sys.exit(2)
-
-
-def pick_port_windows():
-    # COM ports are not files, so os.path.exists() cannot check them: trust $ESP32_PORT.
-    port = os.environ.get("ESP32_PORT")
-    if port:
-        return port
+def list_usb_ports():
     from serial.tools import list_ports  # pyserial, installed with mpremote
 
-    found = [p.device for p in list_ports.comports() if p.vid == 0x10C4]  # CP2102N on the DevKit
-    if len(found) == 1:
-        say("using", found[0])
-        return found[0]
-    say("ERROR: could not pick the ESP32 port. CP210x ports found:", found or "none")
-    say("Run `mpremote devs` and pass --port COMx (or set ESP32_PORT).")
+    ports = list_ports.comports()
+    if not WINDOWS:
+        # macOS lists both /dev/tty.* and /dev/cu.*; use the cu.* ones.
+        ports = [p for p in ports if p.device.startswith("/dev/cu.")]
+    return ports
+
+
+def port_vid(port):
+    for p in list_usb_ports():
+        if p.device == port:
+            return p.vid
+    return None
+
+
+def pick_port(arg_port):
+    port = arg_port or os.environ.get("ESP32_PORT")
+    if port:
+        return port
+    ports = list_usb_ports()
+    # MicroPython's own native-USB serial (303a:4001): the "USB" port when the board runs MicroPython
+    # (e.g. powered from the Freenove breakout). Best choice: no lost bytes, no reset circuit.
+    native = [p.device for p in ports if p.vid == VID_ESPRESSIF and p.pid == 0x4001]
+    wch = [p.device for p in ports if p.vid == VID_WCH and p.pid in PIDS_WCH]
+    cp = [p.device for p in ports if p.vid == VID_CP210X]
+    for found in (native, wch, cp):
+        if len(found) == 1:
+            return found[0]
+        if len(found) > 1:
+            say("ERROR: more than one possible ESP32 port:", found, "- pass --port.")
+            sys.exit(2)
+    if any(p.vid == VID_ESPRESSIF and p.pid == 0x1001 for p in ports):
+        say("ERROR: only the ESP32's native \"USB\" port is connected. It is for flashing only")
+        say("(the board starts in download mode there). Move the cable to the \"COM\" port.")
+    else:
+        say("ERROR: no ESP32 port found. Is the board plugged into its \"COM\" port?")
+    say("Ports seen:", ["%s %04x:%04x" % (p.device, p.vid, p.pid) for p in ports if p.vid] or "none")
     sys.exit(2)
+
+
+def install_pacing(port):
+    """Pace every serial write for CH343 ports (see the top of this file)."""
+    env = os.environ.get("ESP32_PACE")
+    if env == "0" or (env != "1" and port_vid(port) != VID_WCH):
+        return
+    import serial
+
+    if getattr(serial.Serial.write, "_paced", False):
+        return
+    orig_write = serial.Serial.write
+    chunk = 64
+    per_byte = 10.0 / BAUD * 1.25   # 10 bits per byte, +25% margin
+    state = {"free_at": 0.0}
+
+    def paced_write(self, data):
+        data = bytes(data)
+        sent = 0
+        for i in range(0, len(data), chunk):
+            part = data[i:i + chunk]
+            wait = state["free_at"] - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            sent += orig_write(self, part) or 0
+            state["free_at"] = time.monotonic() + len(part) * per_byte
+        return sent
+
+    paced_write._paced = True
+    serial.Serial.write = paced_write
 
 
 def process_list():
@@ -125,8 +182,14 @@ def open_port(port):
     last = None
     for _ in range(20):  # up to ~2 s for a killed process to release the port
         try:
-            # Same way mpremote opens it on macOS, so the ESP32 is not reset.
-            return serial.Serial(port, 115200, timeout=0.05, exclusive=True)
+            # DTR = RTS = 1 before and after open: the ESP32 is not reset (same as mpremote).
+            ser = serial.Serial()
+            ser.port, ser.baudrate, ser.timeout = port, BAUD, 0.05
+            ser.dtr = ser.rts = True
+            if not WINDOWS:
+                ser.exclusive = True
+            ser.open()
+            return ser
         except (OSError, serial.SerialException) as e:
             last = e
             time.sleep(0.1)
@@ -247,10 +310,20 @@ def cmd_run(port, path):
         keys = start_key_reader()
         ser = board.serial
         section = 0  # 0 = program output, 1 = error output; each ends with \x04
+        tail = b""   # last bytes seen, to spot the ROM boot banner after an unexpected reset
+        reset_seen_at = None
         while stopping["why"] is None:
+            if reset_seen_at and time.time() - reset_seen_at > 1.5:
+                say("WARNING: the ESP32 rebooted during the program (see ESP-ROM log above).")
+                say("rst:0x1 POWERON usually means a supply dip or the RST button. Program is not running.")
+                board.close()
+                return 1
             n = ser.in_waiting
             if n:
                 data = ser.read(n)
+                if reset_seen_at is None and b"ESP-ROM:" in tail + data:
+                    reset_seen_at = time.time()  # let the boot log finish printing first
+                tail = (tail + data)[-16:]
                 while data:
                     k = data.find(b"\x04")
                     part = data if k < 0 else data[:k]
@@ -306,16 +379,38 @@ def cmd_run(port, path):
     return 0 if stop_board(port) else 1
 
 
+def cmd_mp(port, args):
+    """Run mpremote on PORT with paced writes: `mp ls` = `mpremote connect PORT ls`."""
+    try:
+        from mpremote.main import main as mpremote_main
+    except ImportError:
+        say("ERROR: mpremote is not installed for", sys.executable, "- run: pip install mpremote")
+        return 2
+    sys.argv = ["mpremote", "connect", port] + args
+    return mpremote_main()
+
+
 def main(argv):
     port = None
-    if "--port" in argv:
+    if argv[:1] != ["mp"] and "--port" in argv:
         i = argv.index("--port")
         port = argv[i + 1]
         del argv[i:i + 2]
-    if len(argv) >= 1 and argv[0] == "stop":
-        return cmd_stop(pick_port(port))
+    elif argv[1:3] and argv[1] == "--port":  # mp --port PORT ...
+        port = argv[2]
+        del argv[1:3]
+    if argv[:1] == ["port"]:
+        print(pick_port(port))
+        return 0
+    if argv[:1] in (["stop"], ["run"], ["mp"]):
+        port = pick_port(port)
+        install_pacing(port)
+    if argv[:1] == ["stop"]:
+        return cmd_stop(port)
     if len(argv) == 2 and argv[0] == "run":
-        return cmd_run(pick_port(port), argv[1])
+        return cmd_run(port, argv[1])
+    if len(argv) >= 2 and argv[0] == "mp":
+        return cmd_mp(port, argv[1:])
     print(__doc__)
     return 2
 

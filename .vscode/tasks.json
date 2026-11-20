@@ -1,32 +1,24 @@
 {
-  // MicroPython on the ESP32-S3 with mpremote.
+  // MicroPython on the ESP32-S3 with mpremote, through tools/esp32.py.
   // Cmd+Shift+B (Ctrl+Shift+B on Windows) runs the file you have open.
   // Other tasks: Terminal > Run Task...
-  // Each task asks for the ESP32's port. Press Enter to accept the default,
-  // or type a different one (Windows: COM5 etc.). Run "ESP32: List devices" to see ports.
+  // No port prompt: tools/esp32.py finds the board's "COM" port (WCH CH343) by itself and paces
+  // writes so nothing is lost. To force a port, set ESP32_PORT (see README).
   "version": "2.0.0",
-  "inputs": [
-    {
-      "id": "espPort",
-      "type": "promptString",
-      "description": "ESP32 serial port (Mac: /dev/cu.usbserial-..., Windows: COMx, e.g. COM5)",
-      "default": "/dev/cu.usbserial-130"
-    }
-  ],
   "tasks": [
     {
       "label": "ESP32: Run current file",
       "type": "shell",
       // Runs through tools/esp32.py so Ctrl+C in this terminal also stops the program ON the ESP32.
-      "command": "python3 \"${workspaceFolder}/tools/esp32.py\" run \"${file}\" --port ${input:espPort}",
-      "windows": { "command": "python \"${workspaceFolder}\\tools\\esp32.py\" run \"${file}\" --port ${input:espPort}" },
+      "command": "python3 \"${workspaceFolder}/tools/esp32.py\" run \"${file}\"",
+      "windows": { "command": "python \"${workspaceFolder}\\tools\\esp32.py\" run \"${file}\"" },
       "problemMatcher": [],
       "group": { "kind": "build", "isDefault": true },
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true }
     },
     {
       // Always works: ends mpremote on the Mac AND sends Ctrl-C to the ESP32 so the program's
-      // finally block turns the motors off. No port prompt (fast). Bind a key to it (see README).
+      // finally block turns the motors off. Bind a key to it (see README).
       "label": "ESP32: STOP program (motors off)",
       "type": "shell",
       "command": "python3 \"${workspaceFolder}/tools/esp32.py\" stop",
@@ -37,37 +29,37 @@
     {
       "label": "ESP32: Upload current file as main.py (runs at power-up)",
       "type": "shell",
-      "command": "mpremote connect ${input:espPort} cp \"${file}\" :main.py + reset",
-      "windows": { "command": "python -m mpremote connect ${input:espPort} cp \"${file}\" :main.py + reset" },
+      "command": "python3 \"${workspaceFolder}/tools/esp32.py\" mp cp \"${file}\" :main.py + reset",
+      "windows": { "command": "python \"${workspaceFolder}\\tools\\esp32.py\" mp cp \"${file}\" :main.py + reset" },
       "problemMatcher": []
     },
     {
       "label": "ESP32: Remove main.py (stop auto-run)",
       "type": "shell",
-      "command": "mpremote connect ${input:espPort} rm :main.py + reset",
-      "windows": { "command": "python -m mpremote connect ${input:espPort} rm :main.py + reset" },
+      "command": "python3 \"${workspaceFolder}/tools/esp32.py\" mp rm :main.py + reset",
+      "windows": { "command": "python \"${workspaceFolder}\\tools\\esp32.py\" mp rm :main.py + reset" },
       "problemMatcher": []
     },
     {
       "label": "ESP32: Open REPL",
       "type": "shell",
-      "command": "mpremote connect ${input:espPort} repl",
-      "windows": { "command": "python -m mpremote connect ${input:espPort} repl" },
+      "command": "python3 \"${workspaceFolder}/tools/esp32.py\" mp repl",
+      "windows": { "command": "python \"${workspaceFolder}\\tools\\esp32.py\" mp repl" },
       "problemMatcher": [],
       "presentation": { "reveal": "always", "panel": "dedicated" }
     },
     {
       "label": "ESP32: List files on board",
       "type": "shell",
-      "command": "mpremote connect ${input:espPort} ls",
-      "windows": { "command": "python -m mpremote connect ${input:espPort} ls" },
+      "command": "python3 \"${workspaceFolder}/tools/esp32.py\" mp ls",
+      "windows": { "command": "python \"${workspaceFolder}\\tools\\esp32.py\" mp ls" },
       "problemMatcher": []
     },
     {
       "label": "ESP32: List devices (find the port)",
       "type": "shell",
-      "command": "mpremote devs",
-      "windows": { "command": "python -m mpremote devs" },
+      "command": "python3 -m mpremote devs && python3 \"${workspaceFolder}/tools/esp32.py\" port",
+      "windows": { "command": "python -m mpremote devs && python \"${workspaceFolder}\\tools\\esp32.py\" port" },
       "problemMatcher": []
     }
   ]
