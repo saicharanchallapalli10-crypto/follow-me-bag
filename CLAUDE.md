@@ -20,6 +20,13 @@ new ESP32-S3 + Freenove breakout on 2026-11-20.
   RGB LED is on GPIO 48 (mcu_check 2026-11-20: green lit, blue on GPIO 38 did not), so GPIO 38 is free for lift encoder B.
   Wi-Fi activation reset the board (rst:0x1 POWERON, 3 of 3 tries) when powered from the Mac's USB port:
   supply dip. Not yet tried on another cable/hub or the UBEC 5V rail. Matters for lift_web.py.
+  SAME on the Freenove breakout, native USB to the Mac (2026-11-20, 3 of 3, two different cables): lift_web.py and a Wi-Fi-only test
+  (scratch wifi_only.py) both lost the board at `ap.active(True)` ("AP object made" printed, then
+  OSError 6 'Device not configured' = USB device gone; uptime afterwards ~20 s = chip rebooted). The API calls
+  themselves are fine. Also fails on a POWERED USB hub (4th try). machine.reset_cause() read with `mp resume exec` right after
+  the reboot = 1 (PWRON/brownout), not a panic/WDT. So a real supply dip on the board side (load on the
+  breakout's 5V/3V3 rails, e.g. the breadboard 5V rail with the UWB board, or a weak 3V3 regulator), not the
+  USB source. Next: test with nothing on the breakout's 5V/3V3 terminals; bulk cap 470-1000 uF on 5V/GND.
   2026-11-20: board moved onto a Freenove ESP32-S3 breakout (no wiring file in the repo yet). In the breakout the
   "USB" port runs MicroPython: native USB CDC 303a:4001, `/dev/cu.usbmodem101`. Plain mpremote is reliable there
   (15.5 KB run OK, no pacing needed); esp32.py auto-detect prefers it over the COM port.
@@ -61,6 +68,13 @@ new ESP32-S3 + Freenove breakout on 2026-11-20.
   The scissor lift itself is NOT attached yet (2026-11-20): these were the lift motor's gears only. UP cannot be
   known until the lift is mounted: then run tests/lift_direction.py (WATCH_DIR = 0) with the lift at
   mid-height, see whether DIR 0 (CW) raises or lowers it, and set LIFT_UP_DIR (follow files) and UP_DIR (lift_web.py).
+  UP FOUND 2026-11-20: DIR 0 = UP, DIR 1 = DOWN (tests/lift_buttons.py: the Up button, confirmed on GPIO 4,
+  drove the lift DOWN twice with DIR 1). An earlier report from lift_cw/lift_ccw said the opposite (CCW = up);
+  that was wrong. LIFT_UP_DIR = 0 (follow files), UP_DIR = 0 (lift_web.py, bag_main*.py, lift_buttons.py).
+  At 80% encoder B gives ~2350-2500 pulses/s. A DIR 1 run stalled after ~8600 pulses (an end of travel).
+  Buttons now: Up GPIO 4, Down GPIO 17 (GPIO 5 dropped 2026-11-20), Stop GPIO 6, bottom limit GPIO 7.
+  CONFIRMED 2026-11-20: tests/lift_buttons.py (80%, Up/Down/Stop buttons, stall + bottom switch + 8 s stops)
+  works: Up raises, Down lowers, Stop stops.
 
 ## Pin map (confirmed on hardware)
 
@@ -74,6 +88,10 @@ new ESP32-S3 + Freenove breakout on 2026-11-20.
 | Lift encoder A / B | **42** / **38** | yellow / white, each via 10k/20k divider (tested) |
 | UWB sensor TX -> ESP32 RX | 21 | DWM3001CDK J10 pin 10 |
 | ESP32 TX -> UWB sensor RX | 47 | DWM3001CDK J10 pin 8 |
+| Up button | **4** | 4-leg tactile, diagonal legs: terminal 4 and GND (tested 2026-11-20) |
+| Down button | **17** | diagonal legs: terminal 17 and GND (tested; GPIO 5 dropped, its button/wire never responded) |
+| Stop button | **6** | diagonal legs: terminal 6 and GND (works in lift_buttons.py) |
+| Bottom limit switch | **7** | COM -> GND, NO -> 7 (pressed = 0, LIMIT_PRESSED setting); at the LOWEST allowed height. No top switch. Not tested alone yet |
 
 - Current setup (2026-11-20): ESP32-S3-N8R2 in the Freenove breakout, all connections on its screw terminals.
   DFR0601 P1/A1/B1 = GPIO 18/8/9 (channel 1), P2/A2/B2 = GPIO 10/11/12 (channel 2). DFR0601 VCC (both pins
@@ -126,6 +144,28 @@ new ESP32-S3 + Freenove breakout on 2026-11-20.
 
 ## Files
 
+- `bag_main.py` (BENCH = False: 100/115/300 cm, MAX_SPEED 50) and `bag_main_bench.py` (identical except line 1
+  BENCH = True: 30/40/100 cm, MAX_SPEED 80): THE bag program, written 2026-11-20. One loop polls UART, buttons,
+  bottom switch and lift encoder every ~5 ms; follow-me control step every 100 ms (same logic as follow_me.py).
+  Arming: wheels stay still until the tag is within STOP_DIST for 1 s ("ARMED"); no reading for 3 s -> DISARMED.
+  Lift: Up 4 / Down 17 / Stop 6, 30 ms debounce, act on press, held-at-power-up ignored until released.
+  LIFT_SPEED 80, ramp 0.5 s, stop immediate. Position = encoder B (GPIO 38, Counter 3) pulses, + up / - down by
+  the DIR we set (pulses in the 0.3 s coast after a stop count too; pulses while off are warned about).
+  Bottom switch pressed = homed, pos 0. DOWN stops: bottom switch, Stop, Up (stop only), stall, MAX_LIFT_S 8.
+  UP stops: pos >= LIFT_TOP_COUNTS (PLACEHOLDER 3000, calibrate), Stop, Down, stall, MAX_LIFT_S. Not homed ->
+  each Up move limited to UNHOMED_UP_S 1.5 s (~3000 pulses at 80%). Stall = no B pulse for 0.3 s after the first
+  0.5 s. Refuses Down on the switch, Up at the soft top, anything while Stop is held, and (LIFT_WHILE_DRIVING =
+  False) any lift move unless the wheels are unpowered with 0 counts for 2 steps; if the wheels want to move
+  while the lift runs, the lift stops ("wheels started moving"). set_motor/set_lift interlock as follow_me.py.
+  Prints the pin map with live input states at start, a status line every 0.3 s, worst loop time every 5 s.
+  Checked in a Mac fake-hardware simulation only (every stop reason, arming, interlock); NOT run on hardware yet.
+- `tests/lift_calibrate.py`: homes on the bottom switch (Down), Up refused until homed, no soft top, prints the
+  position every 0.25 s while moving; same counting as bag_main. For finding LIFT_TOP_COUNTS. Not run yet.
+- `tests/lift_buttons.py`: lift on Up/Down/Stop only (80%, stall/bottom switch/8 s stops, no homing). WORKS.
+- `tests/lift_cw.py` (DIR 0 = UP) / `tests/lift_ccw.py` (DIR 1 = DOWN): 80% until Stop, stall, bottom switch, 30 s.
+  `tests/lift_80.py`: 80% ~2 s one way.
+- `tests/button_check.py` (all four inputs, ONLY_GPIO setting), `tests/button4/5/6/17.py` (one GPIO, 20 s),
+  `tests/pin_finder.py` (all free GPIOs 30 s), `tests/limit_switch.py` (GPIO 7). No motors in any of them.
 - `follow_me.py`: main program. Median-of-5 UWB distance -> target speed; stop <= 100 cm, start > 115 cm,
   35% at start up to 80% at >= 300 cm; ramp +3%/-10% per 0.1 s; stops if no reading for 1 s;
   motor 2 = base power, motor 1 = base + trim from encoder count difference (GAIN 0.03, MAX_STEP 2, MAX_TRIM 20).
@@ -205,21 +245,26 @@ new ESP32-S3 + Freenove breakout on 2026-11-20.
 - Change one thing at a time from the last working version, and ask for the program output before guessing.
   Check power and ground before suspecting code.
 - The user is on a Mac, prefers short step-by-step instructions and complete files rather than fragments.
+  Keep test scripts SIMPLE when asked ("don't overcomplicate"): small single-purpose files they run themselves.
+- README.md has Mac + Windows setup and Claude Code instructions; keep both in step when commands change.
 
 ## Open items
 
-- Ground test on the bag; start with MAX_SPEED around 50.
-- Optional arming step: don't move after power-up until the tag has first been seen within STOP_DIST.
+- bag_main test plan (user runs, wheels off the ground): 1. buttons (done except the bottom switch alone);
+  2. bag_main_bench.py with the lift motor unplugged (arming, following, lost-tag stop, buttons; every lift move
+  ends in STALL ~0.8 s without the motor); 3. lift connected: home with Down, tests/lift_calibrate.py to set
+  LIFT_TOP_COUNTS in BOTH bag_main files, watch how far it coasts past the bottom switch at 80%, then
+  Up/Down/Stop/opposite in bag_main_bench.py; 4. bag_main.py on the ground (MAX_SPEED 50), open space, someone
+  at the power switch.
 - Confirm the tag keeps ranging on the power bank over long runs (some power banks shut off at low current).
-- Lift: DIR reversal proven (DIR 0 = CW, DIR 1 = CCW at the gearbox). Once the scissor lift is mounted, find UP
-  with tests/lift_direction.py (WATCH_DIR = 0), set LIFT_UP_DIR in both follow files and UP_DIR in lift_web.py.
-  Test the new esp32.py run (typing reaches the board) with tests/loop_test.py, then the lift keys.
-- New board: fix the Wi-Fi reset (try a short/good cable or powered hub; check on the UBEC 5V rail) before
+- Lift UP direction is set (DIR 0 = UP) everywhere. Test the esp32.py typed-line forwarding with
+  tests/loop_test.py if follow_me.py's lift keys are ever used again.
+- New board: fix the Wi-Fi reset (still happens on the breakout's native USB; try a short/good cable, a powered
+  hub, or a 470-1000 uF cap across the breakout's 5V/GND; check on the UBEC 5V rail) before
   lift_web.py; re-run tests/mcu_check.py to confirm "wifi scan: OK". Re-check every wiring pin on the new board
   (same pin map, untested on this board).
 - Lift website: first hardware test of lift_web.py without the MD10C connected (STALL_CHECK = False, watch for
-  LIFT: UP / STOP / timeout), then with the motor; set UP_DIR to match LIFT_UP_DIR; add limit switches.
-- MERGE PLAN: the ESP32 runs one program at a time, so follow_me.py and lift_web.py are separate tests for now.
-  Merge them into one asyncio program (follow-me loop + web server + lift loop, keeping the wheel/lift interlock
-  from follow_me.py) that becomes main.py (ask before uploading as main.py). Not written yet.
+  LIFT: UP / STOP / timeout), then with the motor; UP_DIR already 0; add limit switches.
+- bag_main.py (buttons, no website) is the program meant to become main.py once tested (ask before uploading).
+  A website version would mean merging lift_web.py into it (asyncio). Not planned right now.
 - Later: two anchors for steering; ultrasonic/ToF for obstacles and stairs.

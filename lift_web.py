@@ -30,7 +30,7 @@ AP_NAME     = "BagLift"      # Wi-Fi network the ESP32 creates
 AP_PASSWORD = "followme123"  # Wi-Fi password (at least 8 characters)
 LIFT_SPEED  = 40     # % lift power while a button is held. Keep it low until the lift is tested
 LIFT_RAMP   = 10.0   # most the lift power can rise per 0.1 s (%). Stopping is always immediate
-UP_DIR      = 0      # MD10C DIR value that moves the lift UP (0 or 1). Same as LIFT_UP_DIR in follow_me.py
+UP_DIR      = 0      # MD10C DIR value that moves the lift UP (lift_buttons test 2026-11-20: DIR 0 = UP). Same as LIFT_UP_DIR in follow_me.py
 TIMEOUT_MS  = 500    # stop if no UP/DOWN command arrives for this long (ms)
 STALL_CHECK = True   # stop if lift encoder A gets no pulses at full power. False for the test without the MD10C
 STALL_READS = 3      # this many 0.1 s readings in a row with 0 pulses on encoder A = stalled
@@ -42,17 +42,18 @@ LOOP_MS   = 50     # lift control step (ms)
 FILTER_NS = 10000  # encoder glitch filter: ignore pulses shorter than 10 us
 HTTP_PORT = 80
 
-# ======================= Lift motor (MD10C) =======================
+# ======================= ALL motor pins to 0 first =======================
+# A floating GPIO 14 once made the lift move by surprise, so every motor pin is driven low
+# before anything else happens (lift PWM 14 / DIR 13, wheels 18/8/9 and 10/11/12).
 pwm_lift = PWM(Pin(14), freq=1000, duty_u16=0)
-dir_lift = Pin(13, Pin.OUT, value=UP_DIR)
-
-# ======================= Wheels: held OFF for this whole program =======================
-wheel_pwms = [PWM(Pin(p), freq=1000, duty_u16=0) for p in (18, 10)]
+dir_lift = Pin(13, Pin.OUT, value=0)
+wheel_pwms = [PWM(Pin(p), freq=1000, duty_u16=0) for p in (18, 10)]  # wheels held OFF the whole time
 wheel_dirs = [Pin(p, Pin.OUT, value=0) for p in (8, 9, 11, 12)]
 
 
 def all_off():
     pwm_lift.duty_u16(0)
+    dir_lift.value(0)
     for p in wheel_pwms:
         p.duty_u16(0)
     for p in wheel_dirs:
@@ -137,7 +138,11 @@ def status_text():
     return s
 
 
-def command(d, cid, n):
+STOP_REASONS = {"released": "button released", "hidden": "page hidden / phone locked",
+                "button": "STOP button"}
+
+
+def command(d, cid, n, why=""):
     global want, last_cmd, latched
     if cid:
         if n <= seen.get(cid, -1):
@@ -146,7 +151,7 @@ def command(d, cid, n):
             seen.clear()
         seen[cid] = n
     if d == "stop":
-        halt("button released")
+        halt(STOP_REASONS.get(why, "stop command"))
         latched = False
     elif d in ("up", "down"):
         last_cmd = time.ticks_ms()
@@ -250,26 +255,28 @@ function get(url,gated){
  x.onloadend=function(){if(gated)busy=false;};
  x.send();
 }
-function send(d){n++;get('/cmd?d='+d+'&c='+cid+'&n='+n,d!='stop');}
+function send(d,r){n++;get('/cmd?d='+d+'&c='+cid+'&n='+n+(r?'&r='+r:''),d!='stop');}
 function press(d,e){
- e.preventDefault();if(held==d)return;release();
+ e.preventDefault();if(held==d)return;release('released');
  held=d;document.getElementById(d).className='on';send(d);
  tick=setInterval(function(){if(held)send(held);},150);
 }
-function release(){
+function release(r){
  if(!held)return;clearInterval(tick);tick=null;
- document.getElementById(held).className='';held=null;send('stop');
+ document.getElementById(held).className='';held=null;send('stop',r);
 }
+function rel(){release('released');}
+function hid(){release('hidden');}
 ['up','down'].forEach(function(d){
  var b=document.getElementById(d);
  b.addEventListener('pointerdown',function(e){press(d,e);});
- ['pointerup','pointercancel','pointerleave'].forEach(function(ev){b.addEventListener(ev,release);});
+ ['pointerup','pointercancel','pointerleave'].forEach(function(ev){b.addEventListener(ev,rel);});
  b.addEventListener('contextmenu',function(e){e.preventDefault();});
 });
-document.getElementById('stop').addEventListener('pointerdown',function(e){e.preventDefault();release();send('stop');});
-document.addEventListener('visibilitychange',function(){if(document.hidden)release();});
-window.addEventListener('blur',release);
-window.addEventListener('pagehide',release);
+document.getElementById('stop').addEventListener('pointerdown',function(e){e.preventDefault();release('button');send('stop','button');});
+document.addEventListener('visibilitychange',function(){if(document.hidden)hid();});
+window.addEventListener('blur',hid);
+window.addEventListener('pagehide',hid);
 setInterval(function(){if(!held)get('/status',true);},1000);
 get('/status',true);
 </script></body></html>
@@ -307,7 +314,7 @@ async def handle(reader, writer):
                 n = int(q.get("n", "0"))
             except ValueError:
                 n = 0
-            command(q.get("d", ""), q.get("c", ""), n)
+            command(q.get("d", ""), q.get("c", ""), n, q.get("r", ""))
             out = response("200 OK", "text/plain; charset=utf-8", status_text().encode())
         elif path.startswith("/status"):
             out = response("200 OK", "text/plain; charset=utf-8", status_text().encode())

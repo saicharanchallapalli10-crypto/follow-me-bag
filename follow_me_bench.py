@@ -38,7 +38,7 @@ LIFT_SPEED     = 40    # % lift power while moving. Keep it low until the lift i
 LIFT_RAMP      = 10.0  # most the lift power can change per 0.1 s step (%)
 LIFT_RUN_MS    = 1000  # how long one u / d press runs the lift (ms, including the ramp up)
 LIFT_MAX_MS    = 4000  # longest continuous lift run, even if the key is pressed again (ms)
-LIFT_UP_DIR    = 0     # MD10C DIR value that moves the lift UP. CHECK with tests/lift_test_encoder.py
+LIFT_UP_DIR    = 0     # MD10C DIR value that moves the lift UP (lift_buttons test 2026-11-20: DIR 0 = UP)
 STALL_READS    = 3     # this many 0.1 s readings with 0 pulses on lift encoder A = stalled
 STALL_CHECK    = True  # set False only if lift encoder A is not working
 WHEEL_STOP_MS  = 1500  # wait at most this long for the wheels to stop turning before lifting

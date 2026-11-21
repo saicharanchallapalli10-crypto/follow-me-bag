@@ -351,6 +351,9 @@ def cmd_run(port, path):
     except Exception as e:
         if stopping["why"] is None:
             say("ERROR while running:", repr(e))
+            if getattr(e, "errno", None) == 6:  # ENXIO: the USB port disappeared
+                say("The board's USB port disappeared: the ESP32 reset or lost power mid-program")
+                say("(on native USB a reset shows up like this, not as an ESP-ROM banner).")
 
     if ended:
         # The program finished by itself (or stopped with an error, printed below).
